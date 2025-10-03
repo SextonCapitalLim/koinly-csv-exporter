@@ -58,7 +58,7 @@
         };
         
         try {
-            const response = await fetch(`https://api.koinly.io/api/wallets/${walletID}`, requestOptions);
+            const response = await fetch(`https://api.koinly.io/api/wallets/${encodeURIComponent(walletID)}`, requestOptions);
             return response.json();
         } catch(err) {
             console.error(err)
@@ -74,7 +74,7 @@
         };
         
         try {
-            const response = await fetch(`https://api.koinly.io/api/transactions?order=date&q[m]=and&q[g][0][from_wallet_id_or_to_wallet_id_eq]=${walletID}&page=${pageNumber}&per_page=${PAGE_COUNT}`, requestOptions);
+            const response = await fetch(`https://api.koinly.io/api/transactions?order=date&q[m]=and&q[g][0][from_wallet_id_or_to_wallet_id_eq]=${encodeURIComponent(walletID)}&page=${pageNumber}&per_page=${PAGE_COUNT}`, requestOptions);
             return response.json();
         } catch(err) {
             console.error(err)
@@ -84,65 +84,107 @@
 
     const getAllTransactions = async (walletID) => {
         const firstPage = await fetchPage(1, walletID);
-        const totalPages = firstPage.meta.page.total_pages;
+        const totalPages = (firstPage && firstPage.meta && firstPage.meta.page && Number(firstPage.meta.page.total_pages)) || 1;
         const promises = [];
         for (let i=2; i <= totalPages; i++) {
             promises.push(fetchPage(i, walletID));
         }
-        const remainingPages = await Promise.all(promises);
-        const allPages = [firstPage, ...remainingPages];
-        return allPages.flatMap(it => it.transactions);
+        const remainingPages = promises.length ? await Promise.all(promises) : [];
+        const allPages = [firstPage, ...remainingPages].filter(Boolean);
+        return allPages.flatMap(it => (it && Array.isArray(it.transactions)) ? it.transactions : []);
     }
 
     const toCSVFile = (walletName, baseCurrency, transactions) => {  
-        // Headings
-        // Representing Koinly Spreadsheet (https://docs.google.com/spreadsheets/d/1dESkilY70aLlo18P3wqXR_PX1svNyAbkYiAk2tBPJng/edit#gid=0)
+        // Helper: CSV-safe cell value (quote and escape)
+        const csvCell = (val) => {
+            if (val === null || val === undefined) return '""';
+            const str = String(val)
+                .replace(/\r\n/g, '\n')
+                .replace(/\r/g, '\n');
+            const escaped = str.replace(/"/g, '""');
+            return `"${escaped}"`;
+        }
+
+        // Helper: sanitize filename for cross-OS compatibility
+        const sanitizeFileName = (name) => {
+            const fallback = 'Transactions';
+            if (!name || !String(name).trim()) return fallback;
+            const normalized = (String(name).normalize ? String(name).normalize('NFKD') : String(name));
+            const replaced = normalized
+                .replace(/[\\/:*?"<>|]/g, ' ')
+                .replace(/[\u0000-\u001F\u007F]+/g, ' ')
+                .replace(/\s+/g, ' ')
+                .trim();
+            const truncated = replaced.slice(0, 150) || fallback;
+            return truncated;
+        }
+
+        // Headings (quoted for safety)
         const headings = [
-           'Date',
-           'Sent Amount',
-           'Sent Currency',
-           'Received Amount',
-           'Received Currency',
-           'Fee Amount',
-           'Fee Currency',
-           'Net Worth Amount',
-           'Net Worth Currency',
-           'Label',
-           'Description',
-           'TxHash',
-           // EXTRA_HEADERS: Add extra headers as necessary (ensure you also update "row" below)
-        ]
-        
-        const transactionRows = transactions.map((t) => { 
-           const row = [
-               t.date,
-               t.from ? t.from.amount : '',
-               t.from ? t.from.currency.symbol : '',
-               t.to ? t.to.amount : '',
-               t.to ? t.to.currency.symbol : '',
-               t.fee ? t.fee.amount : '',
-               t.fee ? t.fee.currency.symbol : '',
-               t.net_value,
-               baseCurrency,
-               t.type,
-               t.description,
-               t.txhash,
-               // EXTRA_FIELDS: Add extra fields as necessary (ensure you also update "headings" above)
-           ]
-           return row.join(',');  
+            'Date',
+            'Sent Amount',
+            'Sent Currency',
+            'Received Amount',
+            'Received Currency',
+            'Fee Amount',
+            'Fee Currency',
+            'Net Worth Amount',
+            'Net Worth Currency',
+            'Label',
+            'Description',
+            'TxHash',
+            'contract_address',
+            'from.currency.token_address',
+            'from.wallet.display_address',
+            'to.currency.token_address',
+			'to.wallet.display_address',
+			'fee_value',
+        ];
+
+        const safeBaseCurrency = baseCurrency || '';
+        const rows = Array.isArray(transactions) ? transactions : [];
+        const transactionRows = rows.map((t) => {
+            const row = [
+                t && t.date ? t.date : '',
+                t && t.from && t.from.amount ? t.from.amount : '',
+                t && t.from && t.from.currency && t.from.currency.symbol ? t.from.currency.symbol : '',
+                t && t.to && t.to.amount ? t.to.amount : '',
+                t && t.to && t.to.currency && t.to.currency.symbol ? t.to.currency.symbol : '',
+                t && t.fee && t.fee.amount ? t.fee.amount : '',
+                t && t.fee && t.fee.currency && t.fee.currency.symbol ? t.fee.currency.symbol : '',
+                t && t.net_value ? t.net_value : '',
+                safeBaseCurrency,
+                t && t.type ? t.type : '',
+                t && t.description ? t.description : '',
+                t && t.txhash ? t.txhash : '',
+                t && t.contract_address ? t.contract_address : '',
+                t && t.from && t.from.currency && t.from.currency.token_address ? t.from.currency.token_address : '',
+                t && t.from && t.from.wallet && t.from.wallet.display_address ? t.from.wallet.display_address : '',
+                t && t.to && t.to.currency && t.to.currency.token_address ? t.to.currency.token_address : '',
+				t && t.to && t.to.wallet && t.to.wallet.display_address ? t.to.wallet.display_address : '',
+				t && t.fee_value ? t.fee_value : '',
+            ];
+            return row.map(csvCell).join(',');
         });
-   
+
         const csv = [
-            headings.join(','), 
+            headings.map(csvCell).join(','),
             ...transactionRows
         ].join('\n');
-         
-        const hiddenElement = document.createElement('a');
-        hiddenElement.href = 'data:text/csv;charset=utf-8,' + encodeURI(csv);
-        hiddenElement.target = '_blank';
-        hiddenElement.download = `${walletName} - Transactions.csv`;
-        hiddenElement.click();
+
+        // Use Blob for robust downloads (avoids data URI length/encoding issues)
+        const blob = new Blob(["\uFEFF" + csv], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${sanitizeFileName(walletName)} - Transactions.csv`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 0);
     }
+
+    // (debug helper removed)
 
     const run = async () => {
         const walletID = (prompt('Enter Koinly Wallet ID to export') || '').trim();
@@ -151,8 +193,13 @@
             return;
         }
 
-        const session = await fetchSession();
-        const baseCurrency = session.portfolios[0].base_currency.symbol;
+        let baseCurrency = '';
+        try {
+            const session = await fetchSession();
+            baseCurrency = (session && session.portfolios && session.portfolios[0] && session.portfolios[0].base_currency && session.portfolios[0].base_currency.symbol) || '';
+        } catch (e) {
+            console.warn('Could not fetch session/base currency; proceeding with empty base currency.');
+        }
 
         let walletName = `Wallet ${walletID}`;
         try {
@@ -166,9 +213,15 @@
             console.warn('Could not fetch wallet details; proceeding with generic name.');
         }
 
-        const transactions = await getAllTransactions(walletID);
-        console.log(`Your Koinly Transactions for wallet ${walletName} (ID: ${walletID})\n`, transactions);
-        toCSVFile(walletName, baseCurrency, transactions);
+        let transactions = [];
+        try {
+            transactions = await getAllTransactions(walletID);
+        } catch (e) {
+            console.error(e);
+            alert('Failed to fetch transactions. A CSV with only headers will be downloaded.');
+        }
+		// debug logs removed
+        toCSVFile(walletName, baseCurrency, Array.isArray(transactions) ? transactions : []);
     }
 
     run()
